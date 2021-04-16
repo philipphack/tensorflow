@@ -336,33 +336,6 @@ class DatasetV2(collections_abc.Iterable, tracking_base.Trackable,
   def _graph(self, _):
     raise ValueError("The _graph property is read-only")
 
-  # TODO(b/183496844): Move implementation to FinalizeDatasetOp C++.
-  def _has_captured_ref(self):
-    """Whether this dataset uses a function that captures ref variables.
-
-    Returns:
-      A boolean, which if true indicates that the dataset or one of its inputs
-      uses a function that captures ref variables.
-    """
-    if context.executing_eagerly():
-      # RefVariables are not supported in eager mode
-      return False
-
-    def is_tensor_or_parent_ref(tensor):
-      if tensor.dtype._is_ref_dtype:  # pylint: disable=protected-access
-        return True
-      # If the captured tensor is an eager tensor, we cannot trace its inputs.
-      if isinstance(tensor, ops._EagerTensorBase):  # pylint: disable=protected-access
-        return False
-      return any(is_tensor_or_parent_ref(x) for x in tensor.op.inputs)
-
-    for fn in self._functions():
-      if any(is_tensor_or_parent_ref(t) for t in fn.function.captured_inputs):
-        return True
-
-    return any(
-        [input_dataset._has_captured_ref() for input_dataset in self._inputs()])  # pylint: disable=protected-access
-
   # TODO(jsimsa): Change this to be the transitive closure of functions used
   # by this dataset and its inputs.
   def _functions(self):
@@ -394,7 +367,7 @@ class DatasetV2(collections_abc.Iterable, tracking_base.Trackable,
     Returns:
       A `tf.data.Options` object representing the dataset options.
     """
-    if tf_compat.forward_compatible(2021, 4, 12):
+    if tf_compat.forward_compatible(2021, 4, 25):
       if context.executing_eagerly():
         options = self._options_tensor_to_options(self._options())
         options._set_mutable(False)  # pylint: disable=protected-access
@@ -422,8 +395,8 @@ class DatasetV2(collections_abc.Iterable, tracking_base.Trackable,
     else:
       dataset = self
 
-    if tf_compat.forward_compatible(2021, 4, 12):
-      return _FinalizeDataset(dataset, dataset._has_captured_ref())  # pylint: disable=protected-access
+    if tf_compat.forward_compatible(2021, 4, 25):
+      return _FinalizeDataset(dataset)  # pylint: disable=protected-access
 
     options = dataset.options()
 
@@ -446,18 +419,9 @@ class DatasetV2(collections_abc.Iterable, tracking_base.Trackable,
     # pylint: disable=protected-access
     graph_rewrites = options._graph_rewrites()
     graph_rewrite_configs = options._graph_rewrite_configs(autotune)
-    # pylint: enable=protected-access
-    if self._has_captured_ref():
-      if graph_rewrites.enabled or graph_rewrites.default:
-        warnings.warn(
-            "tf.data graph rewrites are not compatible with tf.Variable. "
-            "The following rewrites will be disabled: %s. To enable "
-            "rewrites, use resource variables instead by calling "
-            "`tf.enable_resource_variables()` at the start of the program." %
-            ", ".join(graph_rewrites.enabled + graph_rewrites.default))
-    elif (graph_rewrites.enabled or graph_rewrites.default or
-          (options.experimental_optimization.apply_default_optimizations  # pylint: disable=g-bool-id-comparison
-           is not False)):
+    if (graph_rewrites.enabled or graph_rewrites.default or
+        (options.experimental_optimization.apply_default_optimizations  # pylint: disable=g-bool-id-comparison
+         is not False)):
       dataset = _OptimizeDataset(dataset, graph_rewrites.enabled,
                                  graph_rewrites.disabled,
                                  graph_rewrites.default, graph_rewrite_configs)
@@ -2319,6 +2283,125 @@ name=None))
             output_shapes=structure.get_flat_tensor_shapes(state_structure),
             output_types=structure.get_flat_tensor_types(state_structure)))
 
+  def get_single_element(self):
+    """Returns the single element of the `dataset` as a nested structure of tensors.
+
+    The function enables you to use a `tf.data.Dataset` in a stateless
+    "tensor-in tensor-out" expression, without creating an iterator.
+    This facilitates the ease of data transformation on tensors using the
+    optimized `tf.data.Dataset` abstraction on top of them.
+
+    For example, lets consider a `preprocessing_fn` which would take as an
+    input the raw features and returns the processed feature along with
+    it's label.
+
+    ```python
+    def preprocessing_fn(raw_feature):
+      # ... the raw_feature is preprocessed as per the use-case
+      return feature
+
+    raw_features = ...  # input batch of BATCH_SIZE elements.
+    dataset = (tf.data.Dataset.from_tensor_slices(raw_features)
+              .map(preprocessing_fn, num_parallel_calls=BATCH_SIZE)
+              .batch(BATCH_SIZE))
+
+    processed_features = dataset.get_single_element()
+    ```
+
+    In the above example, the `raw_features` tensor of length=BATCH_SIZE
+    was converted to a `tf.data.Dataset`. Next, each of the `raw_feature` was
+    mapped using the `preprocessing_fn` and the processed features were
+    grouped into a single batch. The final `dataset` contains only one element
+    which is a batch of all the processed features.
+
+    NOTE: The `dataset` should contain only one element.
+
+    Now, instead of creating an iterator for the `dataset` and retrieving the
+    batch of features, the `tf.data.get_single_element()` function is used
+    to skip the iterator creation process and directly output the batch of
+    features.
+
+    This can be particularly useful when your tensor transformations are
+    expressed as `tf.data.Dataset` operations, and you want to use those
+    transformations while serving your model.
+
+    # Keras
+
+    ```python
+
+    model = ... # A pre-built or custom model
+
+    class PreprocessingModel(tf.keras.Model):
+      def __init__(self, model):
+        super().__init__(self)
+        self.model = model
+
+      @tf.function(input_signature=[...])
+      def serving_fn(self, data):
+        ds = tf.data.Dataset.from_tensor_slices(data)
+        ds = ds.map(preprocessing_fn, num_parallel_calls=BATCH_SIZE)
+        ds = ds.batch(batch_size=BATCH_SIZE)
+        return tf.argmax(self.model(ds.get_single_element()), axis=-1)
+
+    preprocessing_model = PreprocessingModel(model)
+    your_exported_model_dir = ... # save the model to this path.
+    tf.saved_model.save(preprocessing_model, your_exported_model_dir,
+                  signatures={'serving_default': preprocessing_model.serving_fn}
+                  )
+    ```
+
+    # Estimator
+
+    In the case of estimators, you need to generally define a `serving_input_fn`
+    which would require the features to be processed by the model while
+    inferencing.
+
+    ```python
+    def serving_input_fn():
+
+      raw_feature_spec = ... # Spec for the raw_features
+      input_fn = tf.estimator.export.build_parsing_serving_input_receiver_fn(
+          raw_feature_spec, default_batch_size=None)
+      )
+      serving_input_receiver = input_fn()
+      raw_features = serving_input_receiver.features
+
+      def preprocessing_fn(raw_feature):
+        # ... the raw_feature is preprocessed as per the use-case
+        return feature
+
+      dataset = (tf.data.Dataset.from_tensor_slices(raw_features)
+                .map(preprocessing_fn, num_parallel_calls=BATCH_SIZE)
+                .batch(BATCH_SIZE))
+
+      processed_features = dataset.get_single_element()
+
+      # Please note that the value of `BATCH_SIZE` should be equal to
+      # the size of the leading dimension of `raw_features`. This ensures
+      # that `dataset` has only element, which is a pre-requisite for
+      # using `dataset.get_single_element()`.
+
+      return tf.estimator.export.ServingInputReceiver(
+          processed_features, serving_input_receiver.receiver_tensors)
+
+    estimator = ... # A pre-built or custom estimator
+    estimator.export_saved_model(your_exported_model_dir, serving_input_fn)
+    ```
+
+    Returns:
+      A nested structure of `tf.Tensor` objects, corresponding to the single
+      element of `dataset`.
+
+    Raises:
+      InvalidArgumentError: (at runtime) if `dataset` does not contain exactly
+        one element.
+    """
+
+    return structure.from_compatible_tensor_list(
+        self.element_spec,
+        gen_dataset_ops.dataset_to_single_element(self._variant_tensor,
+                                                  **self._flat_structure))  # pylint: disable=protected-access
+
   def unbatch(self):
     """Splits elements of a dataset into multiple elements.
 
@@ -2890,9 +2973,6 @@ class DatasetV1Adapter(DatasetV1):
 
   def _as_variant_tensor(self):
     return self._dataset._variant_tensor  # pylint: disable=protected-access
-
-  def _has_captured_ref(self):
-    return self._dataset._has_captured_ref()  # pylint: disable=protected-access
 
   def _inputs(self):
     return self._dataset._inputs()  # pylint: disable=protected-access
@@ -4800,7 +4880,7 @@ class _OptionsDataset(UnaryUnchangedStructureDataset):
   def __init__(self, input_dataset, options):
     # pylint: disable=protected-access
     self._input_dataset = input_dataset
-    if tf_compat.forward_compatible(2021, 4, 12):
+    if tf_compat.forward_compatible(2021, 4, 25):
       options_pb = dataset_options_pb2.Options()
       options_pb.CopyFrom(options._to_proto())
       with ops.colocate_with(input_dataset._variant_tensor):
@@ -4822,12 +4902,12 @@ class _OptionsDataset(UnaryUnchangedStructureDataset):
 class _FinalizeDataset(UnaryUnchangedStructureDataset):
   """A `Dataset` that acts on the options set on the input dataset."""
 
-  def __init__(self, input_dataset, has_captured_ref):
+  def __init__(self, input_dataset):
     self._input_dataset = input_dataset
     with ops.colocate_with(input_dataset._variant_tensor):
       variant_tensor = gen_dataset_ops.finalize_dataset(
           input_dataset._variant_tensor,  # pylint: disable=protected-access
-          has_captured_ref=has_captured_ref, **self._flat_structure)
+          **self._flat_structure)
     super(_FinalizeDataset, self).__init__(input_dataset, variant_tensor)
 
 
@@ -5120,12 +5200,24 @@ DEBUG_MODE = False
 def enable_debug_mode():
   """Enables debug mode for tf.data.
 
-  Example usage:
+  Example usage with pdb module:
   ```
   import tensorflow as tf
+  import pdb
 
   tf.data.experimental.enable_debug_mode()
-  ds = ... # input pipeline definition
+
+  def func(x):
+    # Python 3.7 and older requires `pdb.Pdb(nosigint=True).set_trace()`
+    pdb.set_trace()
+    x = x + 1
+    return x
+
+  dataset = tf.data.Dataset.from_tensor_slices([1, 2, 3])
+  dataset = dataset.map(func)
+
+  for item in dataset:
+    print(item)
   ```
 
   The effect of debug mode is two-fold:

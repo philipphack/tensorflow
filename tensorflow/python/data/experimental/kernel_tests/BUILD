@@ -4,10 +4,8 @@ load("//tensorflow:tensorflow.bzl", "tf_py_test")  # buildifier: disable=same-or
 
 package(
     default_visibility = ["//tensorflow:internal"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
-
-exports_files(["LICENSE"])
 
 tf_py_test(
     name = "assert_cardinality_test",
@@ -116,6 +114,7 @@ cuda_py_test(
         "//tensorflow/python:math_ops",
         "//tensorflow/python/compat",
         "//tensorflow/python/data/experimental/ops:prefetching_ops",
+        "//tensorflow/python/data/experimental/ops:testing",
         "//tensorflow/python/data/kernel_tests:test_base",
         "//tensorflow/python/data/ops:dataset_ops",
         "//tensorflow/python/data/ops:iterator_ops",
@@ -160,6 +159,9 @@ tf_py_test(
     size = "small",
     srcs = ["data_service_ops_ft_test.py"],
     shard_count = 10,
+    tags = [
+        "notsan",  # TODO(b/185278546): Re-enable after bug fix.
+    ],
     deps = [
         ":data_service_test_base",
         "//tensorflow:tensorflow_py",
@@ -259,25 +261,6 @@ tf_py_test(
 )
 
 tf_py_test(
-    name = "get_single_element_test",
-    size = "small",
-    srcs = ["get_single_element_test.py"],
-    deps = [
-        "//tensorflow/python:array_ops",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:constant_op",
-        "//tensorflow/python:dtypes",
-        "//tensorflow/python:errors",
-        "//tensorflow/python:sparse_tensor",
-        "//tensorflow/python/data/experimental/ops:get_single_element",
-        "//tensorflow/python/data/experimental/ops:grouping",
-        "//tensorflow/python/data/kernel_tests:test_base",
-        "//tensorflow/python/data/ops:dataset_ops",
-        "@absl_py//absl/testing:parameterized",
-    ],
-)
-
-tf_py_test(
     name = "group_by_reducer_test",
     size = "small",
     srcs = ["group_by_reducer_test.py"],
@@ -354,6 +337,23 @@ tf_py_test(
 )
 
 tf_py_test(
+    name = "lookup_ops_test",
+    size = "small",
+    srcs = ["lookup_ops_test.py"],
+    deps = [
+        "//tensorflow/python:dtypes",
+        "//tensorflow/python:framework_ops",
+        "//tensorflow/python:lookup_ops",
+        "//tensorflow/python:platform",
+        "//tensorflow/python:string_ops",
+        "//tensorflow/python:variables",
+        "//tensorflow/python/data/experimental/ops:lookup_ops",
+        "//tensorflow/python/data/ops:dataset_ops",
+        "//tensorflow/python/data/ops:readers",
+    ],
+)
+
+tf_py_test(
     name = "make_batched_features_dataset_test",
     size = "small",
     srcs = ["make_batched_features_dataset_test.py"],
@@ -395,6 +395,10 @@ tf_py_test(
     name = "make_saveable_from_iterator_test",
     size = "small",
     srcs = ["make_saveable_from_iterator_test.py"],
+    tags = [
+        "no_tap",  # TODO(b/185378115): test timeout
+        "notsan",  # b/185381928
+    ],
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_combinations",
@@ -791,6 +795,7 @@ tf_py_test(
     name = "sql_dataset_test",
     size = "small",
     srcs = ["sql_dataset_test.py"],
+    shard_count = 4,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:dtypes",

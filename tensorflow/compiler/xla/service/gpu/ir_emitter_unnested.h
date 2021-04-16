@@ -33,23 +33,9 @@ struct BufferSlice {
   // The root buffer to look at.
   BufferAllocation::Slice buffer_slice;
 
-  // Describes how to dereference starting at that buffer to get to the buffer
-  // in question.
-  ShapeIndex gte_index;
-};
+  // The global constant name of the buffer, if it's a constant.
+  std::string constant_name;
 
-// Describes how to access a particular subshape for an HLO.  For instance if
-// `.hlo_index` is {1} and `.gte_index` is {3, 4} then buffer for `.instr` at
-// ShapeIndex {1} (i.e. the buffer for the second tuple element of hlo) is
-// found at `.buffer_slice`[3][4].  That is, `.slice` is a void***, which we
-// dereference twice -- first at index 3, and then at index 4 -- to get the
-// address of our buffer.
-struct HloBufferSlice : public BufferSlice {
-  const HloInstruction* instr;
-  ShapeIndex hlo_index;
-};
-
-struct MlirBufferSlice : public BufferSlice {
   // The buffer is modified by the kernel.
   bool written = false;
 
@@ -225,8 +211,6 @@ class IrEmitterUnnested : public IrEmitter {
       const HloInstruction& hlo, const llvm_ir::ElementGenerator& body_emitter,
       KernelThunk* thunk, int unroll_factor, bool few_waves = false);
 
-  Status Postprocess(HloInstruction* hlo) override;
-
  private:
   IrEmitterUnnested(const HloModuleConfig& hlo_module_config,
                     IrEmitterContext* ir_emitter_context);
@@ -328,18 +312,8 @@ class IrEmitterUnnested : public IrEmitter {
   //   ```
   Status EmitSliceToDynamicFromMlir(MlirEmitterInput mlir_input);
 
-  // A convenient helper for calling BufferAssignment::GetUniqueSlice.
-  StatusOr<BufferAllocation::Slice> MaybeGetAllocationSlice(
-      const HloInstruction& hlo, const ShapeIndex& index) const {
-    return ir_emitter_context_->buffer_assignment().GetUniqueSlice(&hlo, index);
-  }
-
-  BufferAllocation::Slice GetAllocationSlice(
-      const HloInstruction& hlo, const ShapeIndex& index = {}) const {
-    return MaybeGetAllocationSlice(hlo, index).ConsumeValueOrDie();
-  }
-
-  StatusOr<BufferAllocation::Slice> GetAllocationSliceForMlir(mlir::Value v);
+  StatusOr<BufferAllocation::Slice> GetAllocationSliceForMlir(
+      mlir::Value v, std::string* constant_name = nullptr);
 
   int64 ByteSizeOf(const Shape& shape) const {
     return llvm_ir::ByteSizeOf(
@@ -628,15 +602,9 @@ class IrEmitterUnnested : public IrEmitter {
                                             llvm::Value* partial_result_address,
                                             int threads_per_block);
 
-  std::unique_ptr<KernelThunk> BuildKernelThunkFromBufferSlices(
-      absl::string_view name, Thunk::ThunkInfo thunk_info,
-      absl::Span<const BufferSlice* const> slices,
-      std::function<void(const BufferSlice*, llvm::Value*)>
-          bind_slice_to_ir_value);
-
   std::unique_ptr<KernelThunk> BuildKernelThunkForMlirImpl(
       absl::string_view name, Thunk::ThunkInfo thunk_info,
-      absl::Span<const MlirBufferSlice> slices,
+      absl::Span<const BufferSlice> slices,
       std::vector<llvm_ir::IrArray>* ir_arrays);
 
   StatusOr<std::unique_ptr<KernelThunk>> BuildKernelThunkForMlir(
