@@ -21,9 +21,12 @@ from __future__ import print_function
 
 from typing import Sequence
 
+from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import math_ops
+from tensorflow.python.ops import random_ops
 from tensorflow.python.ops.ragged import ragged_tensor
 from tensorflow.python.ops.ragged.row_partition import RowPartition
 from tensorflow.python.ops.structured.structured_tensor import StructuredTensor
@@ -124,8 +127,8 @@ def gather(params,
   with ops.name_scope(name):
     if axis is None:
       axis = batch_dims
-    ndims_name = params.shape.rank
-    axis = array_ops.get_positive_axis(axis, ndims_name)
+    axis = array_ops.get_positive_axis(axis, params.shape.rank,
+                                       ndims_name='params.shape.rank')
     indices = ragged_tensor.convert_to_tensor_or_ragged_tensor(
         indices, name='indices')
 
@@ -164,6 +167,50 @@ def concat(values, axis, name: str = 'concat'):
   axis = array_ops.get_positive_axis(axis, values[0].rank)
   with ops.name_scope(name, 'StructuredConcat', values):
     return _extend_op(values, leaf_op)
+
+
+@dispatch.dispatch_for_types(random_ops.random_shuffle, StructuredTensor)
+def random_shuffle(value, seed=None, name=None):
+  """Shuffle a structured tensor on the zeroth axis.
+
+  Args:
+    value: a structured tensor of rank at least one.
+    seed: the seed for shuffling.
+    name: the name for shuffle.
+
+  Returns:
+    The shuffled structured tensor.
+  """
+  with ops.name_scope(name, 'shuffle', [value, seed]):
+    if value.rank == 0:
+      raise ValueError('Cannot shuffle a scalar StructuredTensor')
+    first_dimension = value.nrows()
+    index = random_ops.random_shuffle(math_ops.range(first_dimension),
+                                      seed=seed)
+    return gather(value, index, axis=0)
+
+
+@dispatch.dispatch_for_types(array_ops.size_v2, StructuredTensor)
+def size_v2(input, out_type=dtypes.int32, name=None):
+  # pylint: disable=redefined-builtin
+  """Returns the size of a tensor."""
+  return size(input, name=name, out_type=out_type)
+
+
+# pylint: disable=protected-access
+@dispatch.dispatch_for_types(array_ops.size, StructuredTensor)
+def size(input, name=None, out_type=dtypes.int32):
+  # pylint: disable=redefined-builtin
+  """Returns the size of a tensor."""
+  with ops.name_scope(name, 'size', [input]) as name:
+    if not input._row_partitions:
+      if input._nrows is not None:
+        return math_ops.cast(input._nrows, out_type)  # vector.
+      else:
+        return math_ops.cast(1, out_type)  # scalar.
+    # 2D and up.
+    last_row_partition = input._row_partitions[-1]
+    return last_row_partition.nvals(out_type)
 
 
 # pylint: disable=protected-access
@@ -209,6 +256,59 @@ def zeros_like_v2(input, dtype=None, name=None):  # pylint: disable=redefined-bu
         array_ops.zeros(last_row_partition.nvals(), dtype=dtype),
         input._row_partitions)
     return result
+
+
+# pylint: disable=protected-access
+@dispatch.dispatch_for_types(array_ops.ones_like, StructuredTensor)
+def ones_like(tensor, dtype=None, name=None, optimize=True):
+  """Implementation of zeros_like for StructuredTensor for TF v1."""
+  del optimize
+  return ones_like_v2(tensor, dtype=dtype, name=name)
+
+
+# pylint: disable=protected-access
+@dispatch.dispatch_for_types(array_ops.ones_like_v2, StructuredTensor)
+def ones_like_v2(input, dtype=None, name=None):  # pylint: disable=redefined-builtin
+  """Replace every object with a zero.
+
+  Example:
+  >>> st = StructuredTensor.from_pyval([{"x":[3]}, {"x":[4,5]}])
+  >>> tf.ones_like(st)
+  <tf.Tensor: shape=(2,), dtype=int32, numpy=array([1.0, 1.0], dtype=float32)>
+  >>> st = StructuredTensor.from_pyval([[{"x":[3]}], [{"x":[4,5]}, {"x":[]}]])
+  >>> tf.ones_like(st, dtype=tf.int32)
+  <tf.RaggedTensor [[1], [1, 1]]>
+
+  Args:
+    input: a structured tensor.
+    dtype: the dtype of the resulting zeros. (default is tf.float32)
+    name: a name for the op.
+  Returns:
+    a tensor of zeros of the same shape.
+  """
+  if dtype is None:
+    dtype = dtypes.float32
+  with ops.name_scope(name, 'ones_like', [input]) as name:
+    if not input._row_partitions:
+      if input._nrows is not None:
+        return array_ops.ones([input._nrows], dtype)  # vector.
+      else:
+        return array_ops.ones([], dtype)  # scalar.
+    # 2D and up.
+    last_row_partition = input._row_partitions[-1]
+
+    result = ragged_tensor.RaggedTensor._from_nested_row_partitions(
+        array_ops.ones(last_row_partition.nvals(), dtype=dtype),
+        input._row_partitions)
+    return result
+
+
+@dispatch.dispatch_for_types(array_ops.rank, StructuredTensor)
+def rank(input, name=None):
+  # pylint: disable=redefined-builtin
+  """Returns the rank of a tensor."""
+  with ops.name_scope(name, 'rank', [input]) as name:
+    return constant_op.constant(input.rank, dtype=dtypes.int32)
 
 
 def _expand_dims_impl(st, axis, name=None):  # pylint: disable=redefined-builtin

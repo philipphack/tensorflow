@@ -19,10 +19,13 @@ from absl.testing import parameterized
 
 from tensorflow.python.eager import def_function
 from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import ops
+from tensorflow.python.framework import random_seed
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
+from tensorflow.python.ops import random_ops
 from tensorflow.python.ops.ragged import ragged_factory_ops
 from tensorflow.python.ops.ragged import ragged_tensor
 from tensorflow.python.ops.ragged import row_partition
@@ -30,6 +33,7 @@ from tensorflow.python.ops.structured import structured_array_ops
 from tensorflow.python.ops.structured import structured_tensor
 from tensorflow.python.ops.structured.structured_tensor import StructuredTensor
 from tensorflow.python.platform import googletest
+from tensorflow.python.util import nest
 
 
 # TODO(martinz):create StructuredTensorTestCase.
@@ -42,14 +46,24 @@ class StructuredArrayOpsTest(test_util.TensorFlowTestCase,
     if not (isinstance(a, structured_tensor.StructuredTensor) or
             isinstance(b, structured_tensor.StructuredTensor)):
       return super(StructuredArrayOpsTest, self).assertAllEqual(a, b, msg)
+
     if not isinstance(a, structured_tensor.StructuredTensor):
       a = structured_tensor.StructuredTensor.from_pyval(a)
-      self._assertStructuredEqual(a, b, msg, False)
     elif not isinstance(b, structured_tensor.StructuredTensor):
       b = structured_tensor.StructuredTensor.from_pyval(b)
-      self._assertStructuredEqual(a, b, msg, False)
-    else:
-      self._assertStructuredEqual(a, b, msg, True)
+
+    try:
+      nest.assert_same_structure(a, b, expand_composites=True)
+    except (TypeError, ValueError) as e:
+      self.assertIsNone(e, (msg + ": " if msg else "") + str(e))
+    a_tensors = [x for x in nest.flatten(a, expand_composites=True)
+                 if isinstance(x, ops.Tensor)]
+    b_tensors = [x for x in nest.flatten(b, expand_composites=True)
+                 if isinstance(x, ops.Tensor)]
+    self.assertLen(a_tensors, len(b_tensors))
+    a_arrays, b_arrays = self.evaluate((a_tensors, b_tensors))
+    for a_array, b_array in zip(a_arrays, b_arrays):
+      self.assertAllEqual(a_array, b_array, msg)
 
   def _assertStructuredEqual(self, a, b, msg, check_shape):
     if check_shape:
@@ -171,6 +185,126 @@ class StructuredArrayOpsTest(test_util.TensorFlowTestCase,
     result = array_ops.expand_dims(st, 3)
     expected_shape = tensor_shape.TensorShape([2, None, None, 1])
     self.assertEqual(repr(expected_shape), repr(result.shape))
+
+  @parameterized.named_parameters([
+      dict(
+          testcase_name="scalar_int32",
+          row_partitions=None,
+          shape=(),
+          dtype=dtypes.int32,
+          expected=1),
+      dict(
+          testcase_name="scalar_int64",
+          row_partitions=None,
+          shape=(),
+          dtype=dtypes.int64,
+          expected=1),
+      dict(
+          testcase_name="list_0_int32",
+          row_partitions=None,
+          shape=(0),
+          dtype=dtypes.int32,
+          expected=0),
+      dict(
+          testcase_name="list_0_0_int32",
+          row_partitions=None,
+          shape=(0, 0),
+          dtype=dtypes.int32,
+          expected=0),
+      dict(
+          testcase_name="list_int32",
+          row_partitions=None,
+          shape=(7),
+          dtype=dtypes.int32,
+          expected=7),
+      dict(
+          testcase_name="list_int64",
+          row_partitions=None,
+          shape=(7),
+          dtype=dtypes.int64,
+          expected=7),
+      dict(
+          testcase_name="matrix_int32",
+          row_partitions=[[0, 3, 6]],
+          shape=(2, 3),
+          dtype=dtypes.int32,
+          expected=6),
+      dict(
+          testcase_name="tensor_int32",
+          row_partitions=[[0, 3, 6], [0, 1, 2, 3, 4, 5, 6]],
+          shape=(2, 3, 1),
+          dtype=dtypes.int32,
+          expected=6),
+      dict(
+          testcase_name="ragged_1_int32",
+          row_partitions=[[0, 3, 4]],
+          shape=(2, None),
+          dtype=dtypes.int32,
+          expected=4),
+      dict(
+          testcase_name="ragged_2_float32",
+          row_partitions=[[0, 3, 4], [0, 2, 3, 5, 7]],
+          shape=(2, None, None),
+          dtype=dtypes.float32,
+          expected=7),
+  ])  # pyformat: disable
+  def testSizeObject(self, row_partitions, shape, dtype, expected):
+    if row_partitions is not None:
+      row_partitions = [
+          row_partition.RowPartition.from_row_splits(r) for r in row_partitions
+      ]
+    st = StructuredTensor.from_fields({},
+                                      shape=shape,
+                                      row_partitions=row_partitions)
+    # NOTE: size is very robust. There aren't arguments that
+    # should cause this operation to fail.
+    actual = array_ops.size(st, out_type=dtype)
+    self.assertAllEqual(actual, expected)
+
+    actual2 = array_ops.size_v2(st, out_type=dtype)
+    self.assertAllEqual(actual2, expected)
+
+  @parameterized.named_parameters([
+      dict(
+          testcase_name="list_empty_2_1",
+          values=[[{}, {}], [{}]],
+          dtype=dtypes.int32,
+          expected=3),
+      dict(
+          testcase_name="list_empty_2",
+          values=[{}, {}],
+          dtype=dtypes.int32,
+          expected=2),
+      dict(
+          testcase_name="list_empty_1",
+          values=[{}],
+          dtype=dtypes.int32,
+          expected=1),
+      dict(
+          testcase_name="list_example_1",
+          values=[{"x": [3]}, {"x": [4, 5]}],
+          dtype=dtypes.int32,
+          expected=2),
+      dict(
+          testcase_name="list_example_2",
+          values=[[{"x": [3]}], [{"x": [4, 5]}, {"x": []}]],
+          dtype=dtypes.float32,
+          expected=3),
+      dict(
+          testcase_name="list_example_2_None",
+          values=[[{"x": [3]}], [{"x": [4, 5]}, {"x": []}]],
+          dtype=None,
+          expected=3),
+  ])  # pyformat: disable
+  def testSizeAlt(self, values, dtype, expected):
+    st = StructuredTensor.from_pyval(values)
+    # NOTE: size is very robust. There aren't arguments that
+    # should cause this operation to fail.
+    actual = array_ops.size(st, out_type=dtype)
+    self.assertAllEqual(actual, expected)
+
+    actual2 = array_ops.size_v2(st, out_type=dtype)
+    self.assertAllEqual(actual2, expected)
 
   @parameterized.named_parameters([
       dict(
@@ -321,6 +455,241 @@ class StructuredArrayOpsTest(test_util.TensorFlowTestCase,
 
     actual2 = array_ops.zeros_like_v2(st, dtype)
     self.assertAllEqual(actual2, expected)
+
+  @parameterized.named_parameters([
+      dict(
+          testcase_name="scalar_int32",
+          row_partitions=None,
+          shape=(),
+          dtype=dtypes.int32,
+          expected=1),
+      dict(
+          testcase_name="scalar_bool",
+          row_partitions=None,
+          shape=(),
+          dtype=dtypes.bool,
+          expected=True),
+      dict(
+          testcase_name="scalar_int64",
+          row_partitions=None,
+          shape=(),
+          dtype=dtypes.int64,
+          expected=1),
+      dict(
+          testcase_name="scalar_float32",
+          row_partitions=None,
+          shape=(),
+          dtype=dtypes.float32,
+          expected=1.0),
+      dict(
+          testcase_name="list_0_int32",
+          row_partitions=None,
+          shape=(0),
+          dtype=dtypes.int32,
+          expected=[]),
+      dict(
+          testcase_name="list_0_0_int32",
+          row_partitions=None,
+          shape=(0, 0),
+          dtype=dtypes.int32,
+          expected=[]),
+      dict(
+          testcase_name="list_int32",
+          row_partitions=None,
+          shape=(7),
+          dtype=dtypes.int32,
+          expected=[1, 1, 1, 1, 1, 1, 1]),
+      dict(
+          testcase_name="list_int64",
+          row_partitions=None,
+          shape=(7),
+          dtype=dtypes.int64,
+          expected=[1, 1, 1, 1, 1, 1, 1]),
+      dict(
+          testcase_name="list_float32",
+          row_partitions=None,
+          shape=(7),
+          dtype=dtypes.float32,
+          expected=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
+      dict(
+          testcase_name="matrix_int32",
+          row_partitions=[[0, 3, 6]],
+          shape=(2, 3),
+          dtype=dtypes.int32,
+          expected=[[1, 1, 1], [1, 1, 1]]),
+      dict(
+          testcase_name="matrix_float64",
+          row_partitions=[[0, 3, 6]],
+          shape=(2, 3),
+          dtype=dtypes.float64,
+          expected=[[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]]),
+      dict(
+          testcase_name="tensor_int32",
+          row_partitions=[[0, 3, 6], [0, 1, 2, 3, 4, 5, 6]],
+          shape=(2, 3, 1),
+          dtype=dtypes.int32,
+          expected=[[[1], [1], [1]], [[1], [1], [1]]]),
+      dict(
+          testcase_name="tensor_float32",
+          row_partitions=[[0, 3, 6], [0, 1, 2, 3, 4, 5, 6]],
+          shape=(2, 3, 1),
+          dtype=dtypes.float32,
+          expected=[[[1.0], [1.0], [1.0]], [[1.0], [1.0], [1.0]]]),
+      dict(
+          testcase_name="ragged_1_float32",
+          row_partitions=[[0, 3, 4]],
+          shape=(2, None),
+          dtype=dtypes.float32,
+          expected=[[1.0, 1.0, 1.0], [1.0]]),
+      dict(
+          testcase_name="ragged_2_float32",
+          row_partitions=[[0, 3, 4], [0, 2, 3, 5, 7]],
+          shape=(2, None, None),
+          dtype=dtypes.float32,
+          expected=[[[1.0, 1.0], [1.0], [1.0, 1.0]], [[1.0, 1.0]]]),
+  ])  # pyformat: disable
+  def testOnesLikeObject(self, row_partitions, shape, dtype, expected):
+    if row_partitions is not None:
+      row_partitions = [
+          row_partition.RowPartition.from_row_splits(r) for r in row_partitions
+      ]
+    st = StructuredTensor.from_fields({},
+                                      shape=shape,
+                                      row_partitions=row_partitions)
+    # NOTE: ones_like is very robust. There aren't arguments that
+    # should cause this operation to fail.
+    actual = array_ops.ones_like(st, dtype)
+    self.assertAllEqual(actual, expected)
+
+    actual2 = array_ops.ones_like_v2(st, dtype)
+    self.assertAllEqual(actual2, expected)
+
+  @parameterized.named_parameters([
+      dict(
+          testcase_name="list_empty_2_1",
+          values=[[{}, {}], [{}]],
+          dtype=dtypes.int32,
+          expected=[[1, 1], [1]]),
+      dict(
+          testcase_name="list_empty_2",
+          values=[{}, {}],
+          dtype=dtypes.int32,
+          expected=[1, 1]),
+      dict(
+          testcase_name="list_empty_1",
+          values=[{}],
+          dtype=dtypes.int32,
+          expected=[1]),
+      dict(
+          testcase_name="list_example_1",
+          values=[{"x": [3]}, {"x": [4, 5]}],
+          dtype=dtypes.int32,
+          expected=[1, 1]),
+      dict(
+          testcase_name="list_example_2",
+          values=[[{"x": [3]}], [{"x": [4, 5]}, {"x": []}]],
+          dtype=dtypes.float32,
+          expected=[[1.0], [1.0, 1.0]]),
+      dict(
+          testcase_name="list_example_2_None",
+          values=[[{"x": [3]}], [{"x": [4, 5]}, {"x": []}]],
+          dtype=None,
+          expected=[[1.0], [1.0, 1.0]]),
+  ])  # pyformat: disable
+  def testOnesLikeObjectAlt(self, values, dtype, expected):
+    st = StructuredTensor.from_pyval(values)
+    # NOTE: ones_like is very robust. There aren't arguments that
+    # should cause this operation to fail.
+    actual = array_ops.ones_like(st, dtype)
+    self.assertAllEqual(actual, expected)
+
+    actual2 = array_ops.ones_like_v2(st, dtype)
+    self.assertAllEqual(actual2, expected)
+
+  @parameterized.named_parameters([
+      dict(
+          testcase_name="scalar",
+          row_partitions=None,
+          shape=(),
+          expected=0),
+      dict(
+          testcase_name="list_0",
+          row_partitions=None,
+          shape=(0,),
+          expected=1),
+      dict(
+          testcase_name="list_0_0",
+          row_partitions=None,
+          shape=(0, 0),
+          expected=2),
+      dict(
+          testcase_name="list_7",
+          row_partitions=None,
+          shape=(7,),
+          expected=1),
+      dict(
+          testcase_name="matrix",
+          row_partitions=[[0, 3, 6]],
+          shape=(2, 3),
+          expected=2),
+      dict(
+          testcase_name="tensor",
+          row_partitions=[[0, 3, 6], [0, 1, 2, 3, 4, 5, 6]],
+          shape=(2, 3, 1),
+          expected=3),
+      dict(
+          testcase_name="ragged_1",
+          row_partitions=[[0, 3, 4]],
+          shape=(2, None),
+          expected=2),
+      dict(
+          testcase_name="ragged_2",
+          row_partitions=[[0, 3, 4], [0, 2, 3, 5, 7]],
+          shape=(2, None, None),
+          expected=3),
+  ])  # pyformat: disable
+  def testRank(self, row_partitions, shape, expected):
+    if row_partitions is not None:
+      row_partitions = [
+          row_partition.RowPartition.from_row_splits(r) for r in row_partitions
+      ]
+    st = StructuredTensor.from_fields({},
+                                      shape=shape,
+                                      row_partitions=row_partitions)
+
+    # NOTE: rank is very robust. There aren't arguments that
+    # should cause this operation to fail.
+    actual = structured_array_ops.rank(st)
+    self.assertAllEqual(expected, actual)
+
+  @parameterized.named_parameters([
+      dict(
+          testcase_name="list_empty_2_1",
+          values=[[{}, {}], [{}]],
+          expected=2),
+      dict(
+          testcase_name="list_empty_2",
+          values=[{}, {}],
+          expected=1),
+      dict(
+          testcase_name="list_empty_1",
+          values=[{}],
+          expected=1),
+      dict(
+          testcase_name="list_example_1",
+          values=[{"x": [3]}, {"x": [4, 5]}],
+          expected=1),
+      dict(
+          testcase_name="list_example_2",
+          values=[[{"x": [3]}], [{"x": [4, 5]}, {"x": []}]],
+          expected=2),
+  ])  # pyformat: disable
+  def testRankAlt(self, values, expected):
+    st = StructuredTensor.from_pyval(values)
+    # NOTE: rank is very robust. There aren't arguments that
+    # should cause this operation to fail.
+    actual = array_ops.rank(st)
+    self.assertAllEqual(expected, actual)
 
   @parameterized.named_parameters([
       dict(
@@ -491,6 +860,47 @@ class StructuredArrayOpsTest(test_util.TensorFlowTestCase,
       return values[0]
     with self.assertRaisesRegex(ValueError, "List cannot be empty"):
       structured_array_ops._extend_op([], leaf_op)
+
+  def testRandomShuffle2021(self):
+    original = StructuredTensor.from_pyval([
+        {"x0": 0, "y": {"z": [[3, 13]]}},
+        {"x0": 1, "y": {"z": [[3], [4, 13]]}},
+        {"x0": 2, "y": {"z": [[3, 5], [4]]}},
+        {"x0": 3, "y": {"z": [[3, 7, 1], [4]]}},
+        {"x0": 4, "y": {"z": [[3], [4]]}}])  # pyformat: disable
+    random_seed.set_seed(1066)
+    result = random_ops.random_shuffle(original, seed=2021)
+    expected = StructuredTensor.from_pyval([
+        {"x0": 0, "y": {"z": [[3, 13]]}},
+        {"x0": 1, "y": {"z": [[3], [4, 13]]}},
+        {"x0": 4, "y": {"z": [[3], [4]]}},
+        {"x0": 2, "y": {"z": [[3, 5], [4]]}},
+        {"x0": 3, "y": {"z": [[3, 7, 1], [4]]}},])  # pyformat: disable
+    self.assertAllEqual(result, expected)
+
+  def testRandomShuffle2022Eager(self):
+    original = StructuredTensor.from_pyval([
+        {"x0": 0, "y": {"z": [[3, 13]]}},
+        {"x0": 1, "y": {"z": [[3], [4, 13]]}},
+        {"x0": 2, "y": {"z": [[3, 5], [4]]}},
+        {"x0": 3, "y": {"z": [[3, 7, 1], [4]]}},
+        {"x0": 4, "y": {"z": [[3], [4]]}}])  # pyformat: disable
+    expected = StructuredTensor.from_pyval([
+        {"x0": 1, "y": {"z": [[3], [4, 13]]}},
+        {"x0": 0, "y": {"z": [[3, 13]]}},
+        {"x0": 3, "y": {"z": [[3, 7, 1], [4]]}},
+        {"x0": 4, "y": {"z": [[3], [4]]}},
+        {"x0": 2, "y": {"z": [[3, 5], [4]]}}])  # pyformat: disable
+    random_seed.set_seed(1066)
+    result = structured_array_ops.random_shuffle(original, seed=2022)
+    self.assertAllEqual(result, expected)
+
+  def testRandomShuffleScalarError(self):
+    original = StructuredTensor.from_pyval(
+        {"x0": 2, "y": {"z": [[3, 5], [4]]}})  # pyformat: disable
+
+    with self.assertRaisesRegex(ValueError, "scalar"):
+      random_ops.random_shuffle(original)
 
   def testStructuredTensorArrayLikeNoRank(self):
     """Test when the rank is unknown."""
@@ -778,6 +1188,7 @@ class StructuredArrayOpsTest(test_util.TensorFlowTestCase,
           axis=axis,
           name=None,
           batch_dims=batch_dims)
+
 
 if __name__ == "__main__":
   googletest.main()
