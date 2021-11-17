@@ -16,6 +16,7 @@ limitations under the License.
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
+#include "mlir-hlo/Dialect/mhlo/transforms/PassDetail.h"
 #include "mlir-hlo/Dialect/mhlo/transforms/passes.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
@@ -39,7 +40,7 @@ void MatchAndRewrite(WhileOp whileOp);
 
 /// Pass that converts MHLO control flow to SCF.
 class ControlFlowToScfPass
-    : public mlir::PassWrapper<ControlFlowToScfPass, FunctionPass> {
+    : public LegalizeControlFlowToScfPassBase<ControlFlowToScfPass> {
   void getDependentDialects(DialectRegistry& registry) const override {
     registry.insert<scf::SCFDialect>();
   }
@@ -126,7 +127,8 @@ void MatchAndRewrite(WhileOp whileOp) {
   auto getAsIndex = [&](Value val) {
     auto loc = whileOp.getLoc();
     return b.create<tensor::ExtractOp>(
-        loc, b.create<IndexCastOp>(loc, tensorIndexType, val), ValueRange());
+        loc, b.create<arith::IndexCastOp>(loc, tensorIndexType, val),
+        ValueRange());
   };
 
   // SCF for uses index type, so converted these.
@@ -145,8 +147,8 @@ void MatchAndRewrite(WhileOp whileOp) {
       loopIndVar.first.getType().cast<ShapedType>().getElementType();
   Value indVar = b.create<SplatOp>(
       whileOp.getLoc(), RankedTensorType::get({}, loopIndVarElType),
-      b.create<IndexCastOp>(whileOp.getLoc(), loopIndVarElType,
-                            forOp.getInductionVar()));
+      b.create<arith::IndexCastOp>(whileOp.getLoc(), loopIndVarElType,
+                                   forOp.getInductionVar()));
   // Update all block argument users to the SCF For args.
   for (auto* use :
        llvm::make_early_inc_range(whileOp.body().getArgument(0).getUsers())) {

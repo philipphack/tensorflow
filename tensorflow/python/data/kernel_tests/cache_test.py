@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Tests for `tf.data.Dataset.cache()`."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import functools
 import os
 from os import path
@@ -432,11 +428,17 @@ class MemoryCacheTest(test_base.DatasetTestBase, parameterized.TestCase):
         ckpt, self.get_temp_dir(), max_to_keep=1)
     manager.save()
 
+  @combinations.generate(test_base.default_test_combinations())
+  def testName(self):
+    dataset = dataset_ops.Dataset.from_tensors(42).cache(name="cache")
+    self.assertDatasetProduces(dataset, [42])
+
 
 class CacheCheckpointTest(checkpoint_test_base.CheckpointTestBase,
                           parameterized.TestCase):
 
   def setUp(self):
+    super(CacheCheckpointTest, self).setUp()
     self.range_size = 10
     self.num_repeats = 3
     self.num_outputs = self.range_size * self.num_repeats

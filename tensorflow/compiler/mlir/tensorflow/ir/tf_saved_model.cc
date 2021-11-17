@@ -208,7 +208,7 @@ LogicalResult TensorFlowSavedModelDialect::verifyRegionArgAttribute(
   }
 
   return op->emitError() << "unknown tf_saved_model dialect arg attribute '"
-                         << named_attr.first << "'";
+                         << named_attr.first.getValue() << "'";
 }
 
 LogicalResult TensorFlowSavedModelDialect::verifyRegionResultAttribute(
@@ -219,7 +219,7 @@ LogicalResult TensorFlowSavedModelDialect::verifyRegionResultAttribute(
   }
 
   return op->emitError() << "unknown tf_saved_model dialect result attribute '"
-                         << named_attr.first << "'";
+                         << named_attr.first.getValue() << "'";
 }
 
 static bool HasAnyTfSavedModelArgAttr(FuncOp func) {
@@ -307,8 +307,8 @@ static LogicalResult VerifySavedModelModule(
                                  "have analyzable symbol uses";
   }
   for (auto symbol_use : *symbol_uses) {
-    auto func = symbol_table.lookup<FuncOp>(
-        symbol_use.getSymbolRef().cast<FlatSymbolRefAttr>().getValue());
+    auto func = symbol_table.lookupNearestSymbolFrom<FuncOp>(
+        symbol_use.getUser(), symbol_use.getSymbolRef());
     if (func && IsExported(func)) {
       // If it is an init function, then it can be used by the unique
       // session_initializer op.
@@ -409,7 +409,7 @@ LogicalResult TensorFlowSavedModelDialect::verifyOperationAttribute(
   }
 
   return op->emitError() << "unknown tf_saved_model dialect attribute '"
-                         << named_attr.first << "'";
+                         << named_attr.first.getValue() << "'";
 }
 
 SmallVector<StringRef, 2> GetExportedNames(Operation *op) {

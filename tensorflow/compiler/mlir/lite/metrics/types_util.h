@@ -19,7 +19,7 @@ limitations under the License.
 #include <functional>
 
 #include "mlir/IR/Location.h"  // from @llvm-project
-#include "tensorflow/lite/python/metrics_wrapper/converter_error_data.pb.h"
+#include "tensorflow/lite/python/metrics/converter_error_data.pb.h"
 
 namespace mlir {
 namespace TFL {
@@ -49,8 +49,8 @@ struct ConverterErrorDataHash {
   }
 };
 
-// The comparision function for ConverterErrorData.
-struct ConverterErrorDataComparision {
+// The comparison function for ConverterErrorData.
+struct ConverterErrorDataComparison {
   std::size_t operator()(
       const tflite::metrics::ConverterErrorData& a,
       const tflite::metrics::ConverterErrorData& b) const noexcept {
@@ -62,7 +62,7 @@ struct ConverterErrorDataComparision {
 tflite::metrics::ConverterErrorData NewConverterErrorData(
     const std ::string& pass_name, const std::string& error_message,
     tflite::metrics::ConverterErrorData::ErrorCode error_code,
-    const std::string& op_name);
+    const std::string& op_name, const Location& location);
 
 }  // namespace TFL
 }  // namespace mlir

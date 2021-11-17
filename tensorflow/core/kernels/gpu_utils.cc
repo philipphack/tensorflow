@@ -112,13 +112,12 @@ tensorflow::CudnnVersion GetCudnnVersion(se::StreamExecutor* stream_executor) {
 
 tensorflow::ComputeCapability GetComputeCapability(
     se::StreamExecutor* stream_executor) {
-  tensorflow::ComputeCapability cc;
-  int cc_major, cc_minor;
-  stream_executor->GetDeviceDescription().cuda_compute_capability(&cc_major,
-                                                                  &cc_minor);
-  cc.set_major(cc_major);
-  cc.set_minor(cc_minor);
-  return cc;
+  tensorflow::ComputeCapability cc_proto;
+  se::CudaComputeCapability cc =
+      stream_executor->GetDeviceDescription().cuda_compute_capability();
+  cc_proto.set_major(cc.major);
+  cc_proto.set_minor(cc.minor);
+  return cc_proto;
 }
 
 }  // namespace
@@ -214,10 +213,9 @@ void LogFusedConvForwardAutotuneResults(
   Logger::GetSingleton()->LogProto(log);
 }
 
-Status BestCudnnConvAlgorithm(
-    absl::Span<const AutotuneResult> results,
-    std::vector<std::unique_ptr<se::dnn::ConvolveExecutionPlan>>* plans,
-    se::dnn::AlgorithmConfig* algo) {
+namespace {
+StatusOr<std::tuple<int, int>> BestCudnnConvAlgorithmIndices(
+    absl::Span<const AutotuneResult> results) {
   auto compare_run_times = [](const AutotuneResult& lhs,
                               const AutotuneResult& rhs) {
     return proto_utils::FromDurationProto(lhs.run_time()) <
@@ -239,34 +237,78 @@ Status BestCudnnConvAlgorithm(
   }
 
   if (idx == -1) {
-    return errors::NotFound("No algorithm worked!");
+    std::ostringstream msg;
+    msg << "No algorithm worked!  Error messages:";
+    // TODO(awpr): identify the algorithm as part of this error message, too.
+    for (const auto& result : results) {
+      msg << "\n  " << result.failure().msg();
+    }
+    return errors::NotFound(msg.str());
   }
 
-  if (plans == nullptr) {
-    algo->set_algorithm({results[idx].conv().algorithm(),
-                         results[idx].conv().tensor_ops_enabled()});
-    algo->set_scratch_size(results[idx].scratch_bytes());
-    if (idx_no_scratch != -1) {
-      algo->set_algorithm_no_scratch(
-          {results[idx_no_scratch].conv().algorithm(),
-           results[idx_no_scratch].conv().tensor_ops_enabled()});
-    }
-  } else {
-    algo->set_algorithm(
-        {(*plans)[idx]->getTag(), (*plans)[idx]->get_raw_desc()});
-    algo->set_scratch_size((*plans)[idx]->getWorkspaceSize());
-    if (idx_no_scratch != -1) {
-      algo->set_algorithm_no_scratch(
-          {(*plans)[idx_no_scratch]->getTag(),
-           (*plans)[idx_no_scratch]->get_raw_desc()});
-    }
-    algo->set_plan((*plans)[idx]);
-    if (idx_no_scratch != -1 && idx_no_scratch != idx) {
-      algo->set_plan_no_scratch((*plans)[idx_no_scratch]);
-    }
-  }
-  return Status::OK();
+  return std::make_tuple(idx, idx_no_scratch);
 }
+}  // namespace
+
+StatusOr<se::dnn::AlgorithmConfig> BestCudnnConvAlgorithm(
+    absl::Span<const AutotuneResult> results) {
+  int idx;
+  int idx_no_scratch;
+  TF_ASSIGN_OR_RETURN(std::tie(idx, idx_no_scratch),
+                      BestCudnnConvAlgorithmIndices(results));
+  VLOG(2) << "fastest algorithm: "
+          << proto_utils::FromDurationProto(results[idx].run_time())
+          << " with algo " << results[idx].conv().algorithm()
+          << ", workspace bytes " << results[idx].scratch_bytes();
+
+  se::dnn::AlgorithmConfig result({results[idx].conv().algorithm(),
+                                   results[idx].conv().tensor_ops_enabled()},
+                                  results[idx].scratch_bytes());
+  if (idx_no_scratch != -1) {
+    result.set_algorithm_no_scratch(
+        {results[idx_no_scratch].conv().algorithm(),
+         results[idx_no_scratch].conv().tensor_ops_enabled()});
+  }
+  return result;
+}
+
+template <typename Op>
+StatusOr<AutotuneEntry<Op>> BestCudnnConvAlgorithm(
+    absl::Span<const AutotuneResult> results,
+    std::vector<
+        std::unique_ptr<const se::dnn::OpRunner<typename Op::Signature>>>
+        runners) {
+  if (runners.size() != results.size()) {
+    return errors::Internal(
+        "Mismatched size of autotune results and runners vectors.");
+  }
+  int idx;
+  int idx_no_scratch;
+  TF_ASSIGN_OR_RETURN(std::tie(idx, idx_no_scratch),
+                      BestCudnnConvAlgorithmIndices(results));
+  VLOG(2) << "fastest algorithm: "
+          << proto_utils::FromDurationProto(results[idx].run_time())
+          << " with algo " << runners[idx]->ToString() << ", workspace bytes "
+          << results[idx].scratch_bytes();
+  return AutotuneEntry<Op>::FromOpRunners(
+      std::move(runners[idx]), idx_no_scratch == -1 || idx_no_scratch == idx
+                                   ? nullptr
+                                   : std::move(runners[idx_no_scratch]));
+}
+
+template StatusOr<AutotuneEntry<se::dnn::ConvOp>>
+BestCudnnConvAlgorithm<se::dnn::ConvOp>(
+    absl::Span<const AutotuneResult> results,
+    std::vector<
+        std::unique_ptr<const se::dnn::OpRunner<se::dnn::ConvSignature>>>
+        runners);
+
+template StatusOr<AutotuneEntry<se::dnn::FusedConvOp>>
+BestCudnnConvAlgorithm<se::dnn::FusedConvOp>(
+    absl::Span<const AutotuneResult> results,
+    std::vector<
+        std::unique_ptr<const se::dnn::OpRunner<se::dnn::FusedConvSignature>>>
+        runners);
 
 }  // namespace tensorflow
 

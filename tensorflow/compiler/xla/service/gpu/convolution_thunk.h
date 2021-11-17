@@ -21,7 +21,6 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/gpu/buffer_allocations.h"
 #include "tensorflow/compiler/xla/service/gpu/gpu_conv_runner.h"
 #include "tensorflow/compiler/xla/service/gpu/gpu_executable.h"
-#include "tensorflow/compiler/xla/service/gpu/hlo_execution_profiler.h"
 #include "tensorflow/compiler/xla/service/gpu/thunk.h"
 #include "tensorflow/compiler/xla/service/hlo_instruction.h"
 #include "tensorflow/compiler/xla/service/hlo_instructions.h"
@@ -59,6 +58,7 @@ class ConvolutionThunk : public Thunk {
 
   // Convolution config
   const GpuConvConfig config_;
+  MaybeFusedConvRunner runner_cache_;
 };
 
 }  // namespace gpu

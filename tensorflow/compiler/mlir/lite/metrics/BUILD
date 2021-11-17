@@ -5,6 +5,7 @@ package(
     default_visibility = [
         "//tensorflow/compiler/mlir/lite:__subpackages__",
         "//tensorflow/lite/python:__subpackages__",
+        "//tensorflow/lite/toco/python:__subpackages__",
     ],
     licenses = ["notice"],
 )
@@ -15,7 +16,19 @@ cc_library(
     hdrs = ["error_collector.h"],
     deps = [
         ":types_util",
-        "//tensorflow/lite/python/metrics_wrapper:converter_error_data_proto_cc",
+        "//tensorflow/lite/python/metrics:converter_error_data_proto_cc",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_library(
+    name = "error_collector_inst",
+    srcs = ["error_collector_inst.cc"],
+    hdrs = ["error_collector_inst.h"],
+    deps = [
+        ":error_collector",
+        ":types_util",
+        "//tensorflow/lite/python/metrics:converter_error_data_proto_cc",
         "@com_google_absl//absl/strings",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
@@ -23,15 +36,16 @@ cc_library(
 )
 
 tf_cc_test(
-    name = "error_collector_test",
-    srcs = ["error_collector_test.cc"],
+    name = "error_collector_inst_test",
+    srcs = ["error_collector_inst_test.cc"],
     data = [
         "testdata/strided_slice.mlir",
     ],
     deps = [
-        ":error_collector",
+        ":error_collector_inst",
         ":types_util",
         "//tensorflow/compiler/mlir/tensorflow",
+        "//tensorflow/core:test",
         "//tensorflow/core/platform:resource_loader",
         "//tensorflow/stream_executor/lib",
         "@com_google_googletest//:gtest_main",
@@ -48,7 +62,8 @@ cc_library(
     srcs = ["types_util.cc"],
     hdrs = ["types_util.h"],
     deps = [
-        "//tensorflow/lite/python/metrics_wrapper:converter_error_data_proto_cc",
+        "//tensorflow/lite/python/metrics:converter_error_data_proto_cc",
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
     ],
 )

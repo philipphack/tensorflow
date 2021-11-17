@@ -19,7 +19,6 @@ limitations under the License.
 
 #include "absl/strings/str_cat.h"
 #include "tensorflow/compiler/xla/service/gpu/gpu_conv_runner.h"
-#include "tensorflow/compiler/xla/service/gpu/hlo_execution_profiler.h"
 #include "tensorflow/compiler/xla/service/gpu/ir_emission_utils.h"
 #include "tensorflow/compiler/xla/service/hlo_casting_utils.h"
 #include "tensorflow/compiler/xla/types.h"
@@ -38,7 +37,8 @@ ConvolutionThunk::ConvolutionThunk(
       operand_buffers_(std::move(operand_slices)),
       result_buffer_(result_slice),
       scratch_buffer_(scratch_slice),
-      config_(std::move(config)) {}
+      config_(std::move(config)),
+      runner_cache_(config_) {}
 
 Status ConvolutionThunk::ExecuteOnStream(const ExecuteParams& params) {
   const auto& buffer_allocations = *params.buffer_allocations;
@@ -54,10 +54,11 @@ Status ConvolutionThunk::ExecuteOnStream(const ExecuteParams& params) {
   se::DeviceMemoryBase scratch =
       buffer_allocations.GetDeviceAddress(scratch_buffer_);
 
-  auto op_profiler =
-      params.profiler->MakeScopedInstructionProfiler(profile_index());
+  RunConvOptions opts;
+  opts.runner_cache = &runner_cache_;
+
   TF_RETURN_IF_ERROR(RunGpuConv(config_, absl::MakeSpan(operand_se_buffers),
-                                result_buffer, scratch, params.stream));
+                                result_buffer, scratch, params.stream, opts));
 
   // Note: Convolution has a tuple buffer as an output, but we don't need to
   // populate it as no one should be reading from the tuple directly.

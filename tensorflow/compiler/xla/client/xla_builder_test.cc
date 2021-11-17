@@ -220,7 +220,8 @@ TEST_F(XlaBuilderTest, ShapeInferenceError) {
   Add(x, y);
   auto statusor = BuildHloModule(&b);
   ASSERT_FALSE(statusor.ok());
-  EXPECT_THAT(statusor.status().error_message(), HasSubstr("shape inference"));
+  EXPECT_THAT(statusor.status().error_message(),
+              HasSubstr("Shapes must be equal rank"));
 }
 
 TEST_F(XlaBuilderTest, DynamicDimensionReshapeToR0) {
@@ -405,7 +406,7 @@ TEST_F(XlaBuilderTest, AllGatherR2) {
       ShapeUtil::Equal(root->shape(), ShapeUtil::MakeShape(F32, {4, 64})));
 }
 
-TEST_F(XlaBuilderTest, AllReduceScatter) {
+TEST_F(XlaBuilderTest, ReduceScatter) {
   XlaBuilder b(TestName());
   XlaComputation to_apply;
   {
@@ -421,12 +422,12 @@ TEST_F(XlaBuilderTest, AllReduceScatter) {
   ReplicaGroup group;
   group.add_replica_ids(0);
   group.add_replica_ids(1);
-  AllReduceScatter(x, to_apply, /*scatter_dimension=*/1, /*shard_count=*/2,
-                   /*replica_groups=*/{group});
+  ReduceScatter(x, to_apply, /*scatter_dimension=*/1, /*shard_count=*/2,
+                /*replica_groups=*/{group});
   TF_ASSERT_OK_AND_ASSIGN(auto module, BuildHloModule(&b));
   auto root = module->entry_computation()->root_instruction();
 
-  EXPECT_EQ(root->opcode(), HloOpcode::kAllReduceScatter);
+  EXPECT_EQ(root->opcode(), HloOpcode::kReduceScatter);
   EXPECT_TRUE(
       ShapeUtil::Equal(root->shape(), ShapeUtil::MakeShape(F32, {4, 8})));
 }
@@ -560,7 +561,9 @@ TEST_F(XlaBuilderTest, BuildWithSpecificRootWithWrongBuilder) {
 
 TEST_F(XlaBuilderTest, ProtoMatches) {
   std::vector<XlaComputation> computations;
-  for (int i = 0; i < 2; ++i) {
+  const int n = 2;
+  computations.reserve(n);
+  for (int i = 0; i < n; ++i) {
     XlaBuilder b_call("the_only_to_apply");
     auto p0 = Parameter(&b_call, 0, ShapeUtil::MakeShape(F32, {}), "p0");
     auto p1 = Parameter(&b_call, 1, ShapeUtil::MakeShape(F32, {}), "p1");
@@ -610,7 +613,7 @@ TEST_F(XlaBuilderTest, SetDimensionSize) {
   EXPECT_TRUE(root_shape.is_dynamic_dimension(0));
 }
 
-TEST_F(XlaBuilderTest, RemoveDimensionSize) {
+TEST_F(XlaBuilderTest, RemoveDynamicDimension) {
   XlaBuilder b(TestName());
   auto p0 = Parameter(&b, 0, ShapeUtil::MakeShape(F32, {10}), "p0");
   auto p1 = Parameter(&b, 1, ShapeUtil::MakeShape(S32, {}), "p1");
@@ -622,6 +625,23 @@ TEST_F(XlaBuilderTest, RemoveDimensionSize) {
       module->entry_computation()->root_instruction()->shape();
   // Dynamic dimension has been removed.
   EXPECT_FALSE(root_shape.is_dynamic_dimension(0));
+}
+
+TEST_F(XlaBuilderTest, RemoveDynamicDimensionMultiDims) {
+  XlaBuilder b(TestName());
+  auto p0 = Parameter(&b, 0, ShapeUtil::MakeShape(F32, {10, 10}), "p0");
+  auto p1 = Parameter(&b, 1, ShapeUtil::MakeShape(S32, {}), "p1");
+  auto set_dim_size = SetDimensionSize(p0, p1, 0);
+  set_dim_size = SetDimensionSize(set_dim_size, p1, 1);
+  auto remove_dim_size = RemoveDynamicDimension(set_dim_size, 0);
+  remove_dim_size = RemoveDynamicDimension(remove_dim_size, 1);
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          BuildHloModule(&b, /*root=*/remove_dim_size));
+  const Shape& root_shape =
+      module->entry_computation()->root_instruction()->shape();
+  // Dynamic dimensions are removed.
+  EXPECT_FALSE(root_shape.is_dynamic_dimension(0));
+  EXPECT_FALSE(root_shape.is_dynamic_dimension(1));
 }
 
 TEST_F(XlaBuilderTest, DynamicUnary) {
@@ -1346,6 +1366,20 @@ TEST_F(XlaBuilderTest, ComparisonType) {
   ASSERT_THAT(root, op::Compare(op::Constant(), op::Constant()));
   EXPECT_EQ(Comparison::Type::kSigned,
             DynCast<HloCompareInstruction>(root)->type());
+}
+
+TEST_F(XlaBuilderTest, StableLookUpInstructionByHandle) {
+  XlaBuilder b(TestName());
+  internal::XlaBuilderFriend builder_friend;
+  XlaOp le = Le(ConstantR0<int32>(&b, 1), ConstantR0<int32>(&b, 2));
+  HloInstructionProto* first_op = builder_friend.GetInstruction(le);
+  // Create some more instructions.
+  for (int i = 0; i < 100; ++i) {
+    (void)Le(ConstantR0<int32>(&b, 1), ConstantR0<int32>(&b, 2));
+  }
+  // Make sure first_op hasn't changed.
+  HloInstructionProto* first_op_now = builder_friend.GetInstruction(le);
+  EXPECT_EQ(first_op, first_op_now);
 }
 
 }  // namespace

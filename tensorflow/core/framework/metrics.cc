@@ -17,7 +17,9 @@ limitations under the License.
 
 #include "absl/strings/str_cat.h"
 #include "tensorflow/core/lib/monitoring/counter.h"
+#include "tensorflow/core/lib/monitoring/gauge.h"
 #include "tensorflow/core/lib/monitoring/sampler.h"
+#include "tensorflow/core/protobuf/data_service.pb.h"
 
 namespace tensorflow {
 namespace metrics {
@@ -31,12 +33,6 @@ auto* graph_runs = monitoring::Counter<0>::New(
 auto* graph_run_time_usecs = monitoring::Counter<0>::New(
     "/tensorflow/core/graph_run_time_usecs",
     "The total time spent on executing graphs in microseconds.");
-
-auto* graph_optimization_usecs =
-    monitoring::Counter<2>::New("/tensorflow/core/graph_optimization_usecs",
-                                "The total time spent running each graph "
-                                "optimization pass in microseconds.",
-                                "kind", "name");
 
 auto* graph_run_time_usecs_histogram = monitoring::Sampler<0>::New(
     {"/tensorflow/core/graph_run_time_usecs_histogram",
@@ -103,6 +99,21 @@ auto* tf_data_get_next_duration_usecs_histogram = monitoring::Sampler<0>::New(
     {monitoring::Buckets::Explicit(
         {2., 4., 8., 16., 32., 64., 128., 256., 512., 1024., 1e6})});
 
+auto* tf_data_used_vs_budget_ratio_histogram = monitoring::Sampler<0>::New(
+    {"/tensorflow/data/used_vs_budget_ratio",
+     "Ratio of tf.data used ram over ram budget when running optimization."},
+    // Uniform linear buckets with count 10 from 0 to 2
+    {monitoring::Buckets::Explicit(
+        {0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0})});
+
+auto* tf_data_buffered_vs_budget_ratio_histogram = monitoring::Sampler<0>::New(
+    {"/tensorflow/data/buffered_vs_budget_ratio",
+     "Ratio of tf.data max buffer bytes over ram budget when running "
+     "optimization."},
+    // Uniform linear buckets with count 10 from 0 to 2
+    {monitoring::Buckets::Explicit(
+        {0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0})});
+
 auto* tf_data_iterator_busy_counter =
     monitoring::Counter<0>::New("/tensorflow/data/iterator_busy",
                                 "The time (in microseconds) during which a "
@@ -121,9 +132,41 @@ auto* tf_data_service_workers_created_counter =
     monitoring::Counter<0>::New("/tensorflow/data/service/workers_created",
                                 "Number of tf.data service workers created");
 
+auto* tf_data_service_jobs_created_counter = monitoring::Counter<2>::New(
+    "/tensorflow/data/service/jobs_created", "Number of tf.data service jobs.",
+    "processing_mode", "coordinated_read");
+
 auto* tf_data_filename_counter = monitoring::Counter<2>::New(
     "/tensorflow/data/filename", "The file name read by a tf.data Dataset.",
     "name", "filename");
+
+auto* tf_data_model_gauge =
+    monitoring::Gauge<std::function<std::string()>, 1>::New(
+        "/tensorflow/data/model", "tf.data autotuning model proto.", "id");
+
+auto* tf_data_auto_shard = monitoring::Gauge<int64, 2>::New(
+    "/tensorflow/data/autoshard", "tf.data autoshard statistics.", "id",
+    "name");
+
+auto* tf_data_auto_shard_rewrite_batch_size_eligible =
+    monitoring::Counter<1>::New(
+        "/tensorflow/data/autoshard_rewrite_batch_size/eligible",
+        "Whether tf.data pipelines that are eligible for autoshard "
+        "to rewrite the batch size.",
+        "eligible");
+
+auto* tf_data_auto_shard_rewrite_batch_size_reason =
+    monitoring::Counter<1>::New(
+        "/tensorflow/data/autoshard_rewrite_batch_size/reason",
+        "The reasons that tf.data pipelines are ineligible for autoshard "
+        "to rewrite the batch size.",
+        "reason");
+
+auto* tf_data_autotune_stopping_criteria_counter =
+    monitoring::Counter<1>::New("/tensorflow/data/autotune_stopping_criteria",
+                                "The number of times each tf.data autotune "
+                                "algorithm stopping criterion is met.",
+                                "name");
 
 auto* parse_dense_feature_counter = monitoring::Counter<0>::New(
     "/tensorflow/data/dense_feature",
@@ -180,6 +223,15 @@ auto* tpu_variable_distribution_time_usecs = monitoring::Counter<0>::New(
 
 }  // namespace
 
+monitoring::Counter<2>* GetGraphOptimizationCounter() {
+  static auto* graph_optimization_counter =
+      monitoring::Counter<2>::New("/tensorflow/core/graph_optimization_usecs",
+                                  "The total time spent running each graph "
+                                  "optimization pass in microseconds.",
+                                  "kind", "name");
+  return graph_optimization_counter;
+}
+
 void RecordTFDataAutotune(const string& name) {
   tf_data_autotune_counter->GetCell(name)->IncrementBy(1);
 }
@@ -200,7 +252,12 @@ monitoring::CounterCell* GetTFDataElementsCounter(const string& name) {
   return tf_data_elements_counter->GetCell(name);
 }
 
-void RecordTFDataBytesFetched(int64 num_bytes) {
+monitoring::GaugeCell<std::function<std::string()>>* GetTFDataModelGauge(
+    const string& id) {
+  return tf_data_model_gauge->GetCell(id);
+}
+
+void RecordTFDataBytesFetched(int64_t num_bytes) {
   tf_data_bytes_fetched_counter->GetCell()->IncrementBy(num_bytes);
 }
 
@@ -218,6 +275,18 @@ void RecordTFDataGetNextDuration(uint64 duration_us) {
   tf_data_get_next_duration_cell->Add(duration_us);
 }
 
+void RecordTFDataAutotuneUsedRamBudgetRatio(const double ratio) {
+  static auto* tf_data_used_vs_budget_ratio_histogram_cell =
+      tf_data_used_vs_budget_ratio_histogram->GetCell();
+  tf_data_used_vs_budget_ratio_histogram_cell->Add(ratio);
+}
+
+void RecordTFDataAutotuneMaxBufferBudgetRatio(const double ratio) {
+  static auto* tf_data_buffered_vs_budget_ratio_histogram_cell =
+      tf_data_buffered_vs_budget_ratio_histogram->GetCell();
+  tf_data_buffered_vs_budget_ratio_histogram_cell->Add(ratio);
+}
+
 void RecordTFDataIteratorBusy(uint64 duration_us) {
   static auto* tf_data_iterator_busy_cell =
       tf_data_iterator_busy_counter->GetCell();
@@ -230,7 +299,7 @@ void RecordTFDataIteratorLifetime(uint64 duration_us) {
   tf_data_iterator_lifetime_cell->IncrementBy(duration_us);
 }
 
-void RecordTFDataOptimization(const string& name, int64 num_changes) {
+void RecordTFDataOptimization(const string& name, int64_t num_changes) {
   tf_data_optimization_counter->GetCell(name)->IncrementBy(num_changes);
 }
 
@@ -238,8 +307,43 @@ void RecordTFDataServiceWorkerCreated() {
   tf_data_service_workers_created_counter->GetCell()->IncrementBy(1);
 }
 
+void RecordTFDataServiceJobsCreated(
+    const tensorflow::data::ProcessingModeDef& processing_mode,
+    bool is_coordinated_read) {
+  const std::string sharding_policy_str =
+      data::ProcessingModeDef::ShardingPolicy_Name(
+          processing_mode.sharding_policy());
+  const std::string coordinated_read_str =
+      is_coordinated_read ? "true" : "false";
+  tf_data_service_jobs_created_counter
+      ->GetCell(sharding_policy_str, coordinated_read_str)
+      ->IncrementBy(1);
+}
+
 void RecordTFDataFilename(const string& name, const string& filename) {
   tf_data_filename_counter->GetCell(name, filename)->IncrementBy(1);
+}
+
+void RecordTFDataAutoShard(const string& id, data::AutoShardPolicy policy,
+                           int64 num_workers, int64 num_replicas) {
+  tf_data_auto_shard->GetCell(id, "policy")->Set(static_cast<int64_t>(policy));
+  tf_data_auto_shard->GetCell(id, "num_workers")->Set(num_workers);
+  tf_data_auto_shard->GetCell(id, "num_replicas")->Set(num_replicas);
+}
+
+void RecordTFDataAutoShardRewriteBatchSize(
+    bool eligible, const std::vector<string>& ineligible_reason) {
+  tf_data_auto_shard_rewrite_batch_size_eligible
+      ->GetCell(eligible ? "true" : "false")
+      ->IncrementBy(1);
+  for (const string& reason : ineligible_reason) {
+    tf_data_auto_shard_rewrite_batch_size_reason->GetCell(reason)->IncrementBy(
+        1);
+  }
+}
+
+void RecordTFDataAutotuneStoppingCriteria(const string& name) {
+  tf_data_autotune_stopping_criteria_counter->GetCell(name)->IncrementBy(1);
 }
 
 void RecordParseDenseFeature(int64 num_features) {
@@ -248,13 +352,13 @@ void RecordParseDenseFeature(int64 num_features) {
   parse_dense_feature_counter_cell->IncrementBy(num_features);
 }
 
-void RecordParseSparseFeature(int64 num_features) {
+void RecordParseSparseFeature(int64_t num_features) {
   static auto* parse_sparse_feature_counter_cell =
       parse_sparse_feature_counter->GetCell();
   parse_sparse_feature_counter_cell->IncrementBy(num_features);
 }
 
-void RecordParseRaggedFeature(int64 num_features) {
+void RecordParseRaggedFeature(int64_t num_features) {
   static auto* parse_ragged_feature_counter_cell =
       parse_ragged_feature_counter->GetCell();
   parse_ragged_feature_counter_cell->IncrementBy(num_features);
@@ -272,7 +376,7 @@ void RecordGraphOutputTensors(const size_t size) {
   graph_run_output_tensor_bytes_cell->Add(size);
 }
 
-void RecordTPUXlaSpmdCoresPerReplica(int64 cores_per_replica) {
+void RecordTPUXlaSpmdCoresPerReplica(int64_t cores_per_replica) {
   xla_tpu_spmd_cores_per_replica->GetCell(absl::StrCat(cores_per_replica))
       ->IncrementBy(1);
 }
@@ -293,22 +397,6 @@ void UpdateGraphPendingQueueLength(uint64 len) {
   static auto* graph_pending_queue_length_cell =
       graph_pending_queue_length_histogram->GetCell();
   graph_pending_queue_length_cell->Add(len);
-}
-
-void UpdateGraphOptimizationPassTime(const string& pass_name,
-                                     const uint64 running_time_usecs) {
-  if (running_time_usecs > 0) {
-    graph_optimization_usecs->GetCell("GraphOptimizationPass", pass_name)
-        ->IncrementBy(running_time_usecs);
-  }
-}
-
-void UpdateGrapplerPassTime(const string& pass_name,
-                            const uint64 running_time_usecs) {
-  if (running_time_usecs > 0) {
-    graph_optimization_usecs->GetCell("Grappler", pass_name)
-        ->IncrementBy(running_time_usecs);
-  }
 }
 
 void UpdateGraphBuildTime(const uint64 running_time_usecs) {

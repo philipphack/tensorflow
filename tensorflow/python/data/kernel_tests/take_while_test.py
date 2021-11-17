@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Tests for `tf.data.Dataset.take_while()`."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import parameterized
 import numpy as np
 
@@ -81,7 +77,7 @@ class TakeWhileTest(test_base.DatasetTestBase, parameterized.TestCase):
     self.assertEqual(b"the", self.evaluate(next_element()))
 
     with self.assertRaises(errors.OutOfRangeError):
-      self.assertEqual(b"test", self.evaluate(next_element()))
+      self.evaluate(next_element())
 
   @combinations.generate(
       combinations.times(
@@ -114,6 +110,19 @@ class TakeWhileTest(test_base.DatasetTestBase, parameterized.TestCase):
         predicate=lambda x: x < 2).repeat(5)
     self.assertDatasetProduces(dataset, np.tile([0, 1], 5))
 
+  @combinations.generate(test_base.default_test_combinations())
+  def testTakeWhileDatasetStops(self):
+    dataset = dataset_ops.Dataset.range(10)
+    dataset = dataset.take_while(
+        lambda x: math_ops.logical_not(math_ops.equal(x, 5)))
+    self.assertDatasetProduces(dataset, range(5))
+
+  @combinations.generate(test_base.default_test_combinations())
+  def testName(self):
+    dataset = dataset_ops.Dataset.from_tensors(42).take_while(
+        lambda _: True, name="take_while")
+    self.assertDatasetProduces(dataset, [42])
+
 
 class TakeWhileCheckpointTest(checkpoint_test_base.CheckpointTestBase,
                               parameterized.TestCase):
@@ -125,10 +134,11 @@ class TakeWhileCheckpointTest(checkpoint_test_base.CheckpointTestBase,
   @combinations.generate(
       combinations.times(
           test_base.default_test_combinations(),
+          checkpoint_test_base.default_test_combinations(),
           combinations.combine(num_elements=[10, 23], upper_bound=[10, 23])))
-  def testCore(self, num_elements, upper_bound):
-    self.run_core_tests(lambda: self._build_dataset(num_elements, upper_bound),
-                        min(num_elements, upper_bound))
+  def test(self, verify_fn, num_elements, upper_bound):
+    verify_fn(self, lambda: self._build_dataset(num_elements, upper_bound),
+              min(num_elements, upper_bound))
 
 
 if __name__ == "__main__":

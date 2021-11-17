@@ -18,12 +18,18 @@ limitations under the License.
 
 #include <string>
 
+#include "tensorflow/compiler/tf2tensorrt/convert/trt_parameters.h"
 #include "tensorflow/compiler/tf2tensorrt/convert/utils.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/grappler/optimizers/custom_graph_optimizer.h"
 #include "tensorflow/core/platform/logging.h"
 
 #if GOOGLE_CUDA && GOOGLE_TENSORRT
+
+#if !IS_TRT_VERSION_GE(7, 0, 0, 0)
+#error From version 2.6, we only support NVIDIA TensorRT version 7 or newer.
+#error Please update your environment and relaunch the compilation.
+#endif
 
 namespace tensorflow {
 namespace tensorrt {

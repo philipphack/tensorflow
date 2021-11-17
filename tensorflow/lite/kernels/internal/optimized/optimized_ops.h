@@ -265,7 +265,7 @@ inline void BinaryBroadcastFiveFold(const ArithmeticParams& unswitched_params,
       // We have broadcast y2*y3*y4 of input2 data y1 times, and now move on.
       input2_data_reset = input2_data_ptr;
     }
-  } else {
+  } else if (input1_data_ptr != nullptr) {
     // Special case of y4 == 1, in which the innermost loop is a single
     // element and can be combined with the next (y3) as an inner broadcast.
     //
@@ -2694,15 +2694,19 @@ inline void BroadcastDivSlow(const ArithmeticParams& params,
   TFLITE_DCHECK_LT(params.output_offset, 256);
 
   auto div_func = [&](int indexes[N]) {
-    const int32 input1_val =
+    int32 input1_val =
         params.input1_offset + input1_data[SubscriptToIndex(desc1, indexes)];
-    const int32 input2_val =
+    int32 input2_val =
         params.input2_offset + input2_data[SubscriptToIndex(desc2, indexes)];
     TFLITE_DCHECK_NE(input2_val, 0);
+    if (input2_val < 0) {
+      // Invert signs to avoid a negative input2_val as input2_inv needs to be
+      // positive to be used as multiplier of MultiplyByQuantizedMultiplier.
+      input1_val = -input1_val;
+      input2_val = -input2_val;
+    }
     int recip_shift;
-    const int32 input2_inv =
-        (input2_val > 0) ? GetReciprocal(input2_val, 31, &recip_shift)
-                         : -GetReciprocal(-input2_val, 31, &recip_shift);
+    const int32 input2_inv = GetReciprocal(input2_val, 31, &recip_shift);
     const int headroom = CountLeadingSignBits(input1_val);
     const int32 unscaled_quotient = MultiplyByQuantizedMultiplierGreaterThanOne(
         input1_val, input2_inv, headroom);
@@ -3172,7 +3176,7 @@ inline int NodeOffset(int b, int h, int w, int height, int width) {
   return (b * height + h) * width + w;
 }
 
-inline void AveragePool(const PoolParams& params,
+inline bool AveragePool(const PoolParams& params,
                         const RuntimeShape& input_shape,
                         const float* input_data,
                         const RuntimeShape& output_shape, float* output_data) {
@@ -3186,6 +3190,9 @@ inline void AveragePool(const PoolParams& params,
   const int output_width = output_shape.Dims(2);
   const int stride_height = params.stride_height;
   const int stride_width = params.stride_width;
+
+  if (stride_height == 0) return false;
+  if (stride_width == 0) return false;
 
   // TODO(benoitjacob) make this a proper reference impl without Eigen!
   const auto in_mat = MapAsMatrixWithLastDimAsRows(input_data, input_shape);
@@ -3232,9 +3239,11 @@ inline void AveragePool(const PoolParams& params,
                                                   params.float_activation_min,
                                                   params.float_activation_max);
   }
+
+  return true;
 }
 
-inline void AveragePool(const PoolParams& params,
+inline bool AveragePool(const PoolParams& params,
                         const RuntimeShape& input_shape,
                         const uint8* input_data,
                         const RuntimeShape& output_shape, uint8* output_data) {
@@ -3283,6 +3292,7 @@ inline void AveragePool(const PoolParams& params,
               std::min(params.filter_height, input_height - in_y_origin);
           const int filter_count =
               (filter_x_end - filter_x_start) * (filter_y_end - filter_y_start);
+          if (filter_count == 0) return false;
           memset(acc, 0, tranche_depth * sizeof(acc[0]));
           const uint8* input_ptr =
               input_data + depth_base +
@@ -3369,6 +3379,7 @@ inline void AveragePool(const PoolParams& params,
       }
     }
   }
+  return true;
 }
 
 inline void MaxPool(const PoolParams& params, const RuntimeShape& input_shape,
@@ -8334,6 +8345,78 @@ inline void Conv3DTranspose(
   output_data_p = output_data;
   BiasAdd3D(output_data_p, bias_data, output_shape, params.float_activation_min,
             params.float_activation_max);
+}
+
+// Worker for summing up within a single interval. Interval is identified by
+// index from [start, end).
+template <typename T>
+struct AddNWorkerTask : cpu_backend_threadpool::Task {
+  AddNWorkerTask(const T* const* input_data, T* scratch_buffer, int start,
+                 int end, int num_elems, int split)
+      : input_data(input_data),
+        scratch_buffer(scratch_buffer),
+        start(start),
+        end(end),
+        num_elems(num_elems),
+        split(split) {}
+  void Run() override {
+    RuntimeShape shape(1);
+    shape.SetDim(0, num_elems);
+    ArithmeticParams params;
+    T output_activation_min = std::numeric_limits<T>::lowest(),
+      output_activation_max = std::numeric_limits<T>::max();
+    SetActivationParams(output_activation_min, output_activation_max, &params);
+    T* start_p = scratch_buffer + split * num_elems;
+    memcpy(start_p, input_data[start], sizeof(T) * num_elems);
+    for (int i = start + 1; i < end; i++) {
+      Add(params, shape, start_p, shape, input_data[i], shape, start_p);
+    }
+  }
+
+  const T* const* input_data;
+  T* scratch_buffer;
+  int start;
+  int end;
+  int num_elems;
+  int split;
+};
+
+// T is expected to be either float or int.
+template <typename T>
+inline void AddN(const RuntimeShape& input_shape, const size_t num_inputs,
+                 const T* const* input_data, T* output_data, T* scratch_buffer,
+                 CpuBackendContext* cpu_backend_context) {
+  // All inputs and output should have the same shape, this is checked during
+  // Prepare stage.
+  const size_t num_elems = input_shape.FlatSize();
+  const int thread_count =
+      std::min(std::max(1, static_cast<int>(num_inputs) / 2),
+               cpu_backend_context->max_num_threads());
+  memset(scratch_buffer, 0, sizeof(T) * num_elems * thread_count);
+
+  std::vector<AddNWorkerTask<T>> tasks;
+  tasks.reserve(thread_count);
+  int start = 0;
+  for (int i = 0; i < thread_count; ++i) {
+    int end = start + (num_inputs - start) / (thread_count - i);
+    tasks.emplace_back(AddNWorkerTask<T>(input_data, scratch_buffer, start, end,
+                                         num_elems, i));
+    start = end;
+  }
+  // Run all tasks on the thread pool.
+  cpu_backend_threadpool::Execute(tasks.size(), tasks.data(),
+                                  cpu_backend_context);
+  RuntimeShape shape(1);
+  shape.SetDim(0, num_elems);
+  ArithmeticParams params;
+  T output_activation_min = std::numeric_limits<T>::lowest(),
+    output_activation_max = std::numeric_limits<T>::max();
+  SetActivationParams(output_activation_min, output_activation_max, &params);
+  memcpy(output_data, scratch_buffer, sizeof(T) * num_elems);
+  for (int i = 1; i < tasks.size(); i++) {
+    Add(params, shape, output_data, shape, scratch_buffer + i * num_elems,
+        shape, output_data);
+  }
 }
 
 }  // namespace optimized_ops

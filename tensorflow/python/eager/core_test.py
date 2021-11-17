@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for core."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
 import os
 import pickle
@@ -583,6 +579,7 @@ class TFETest(test_util.TensorFlowTestCase):
 
   @test_util.disable_tfrt('PyFunc is not supported in TFRT.')
   def testPyFunctionAsync(self):
+    self.skipTest('flaky; b/194307407')
 
     def simple_fn(v):
       one = constant_op.constant(1.)
@@ -1063,6 +1060,7 @@ class TFETest(test_util.TensorFlowTestCase):
         empty_handle.shape.as_list())
 
 
+@test_util.with_eager_op_as_function
 class SendRecvTest(test_util.TensorFlowTestCase):
 
   cpu_device = '/job:localhost/replica:0/task:0/device:CPU:0'
