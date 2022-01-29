@@ -28,7 +28,6 @@ limitations under the License.
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
-#include "mlir/IR/Identifier.h"  // from @llvm-project
 #include "mlir/IR/Location.h"  // from @llvm-project
 #include "mlir/IR/Operation.h"  // from @llvm-project
 #include "mlir/IR/OperationSupport.h"  // from @llvm-project
@@ -308,7 +307,7 @@ StatusOr<std::unique_ptr<NodeDef>> GetOperationNodeDef(
                        .getValue());
     // Remove the attribute from the instruction as it is already converted to
     // op_name.
-    auto attr_id = mlir::Identifier::get("f", inst->getContext());
+    auto attr_id = mlir::StringAttr::get(inst->getContext(), "f");
     inst->removeAttr(attr_id);
   } else {
     // Some control flow ops in TensorFlow Graph have their respective "Ref" ops
@@ -356,8 +355,8 @@ Status ConvertAttributes(
     bool remove_ref_type, AttrValueMap* values) {
   AttrValueMap func_call_attrs;
   for (const mlir::NamedAttribute& named_attr : attrs) {
-    auto name_strref = named_attr.first.str();
-    auto attr = named_attr.second;
+    auto name_strref = named_attr.getName().str();
+    auto attr = named_attr.getValue();
     absl::string_view name(name_strref.data(), name_strref.size());
     if (name == "name" || name == "device" || attrs_to_ignore.contains(name)) {
       // The name, device spec of a TF op or function are not stored as

@@ -133,6 +133,14 @@ class ParallelMapDatasetOp::Dataset : public DatasetBase {
     }
   }
 
+  int64_t CardinalityInternal(CardinalityOptions options) const override {
+    if (preserve_cardinality_) {
+      return input_->Cardinality(options);
+    } else {
+      return kUnknownCardinality;
+    }
+  }
+
   Status Get(OpKernelContext* ctx, int64 index,
              std::vector<Tensor>* out_tensors) const override {
     TF_RETURN_IF_ERROR(CheckRandomAccessCompatible(index));
@@ -248,7 +256,7 @@ class ParallelMapDatasetOp::Dataset : public DatasetBase {
       interleave_depth_ = ctx->interleave_depth();
 
       if (num_parallel_calls_->value == model::kAutotune) {
-        num_parallel_calls_->value = ctx->runner_threadpool_size();
+        num_parallel_calls_->value = GetAutotuneDefaultParallelism(ctx);
       }
       cancellation_manager_ = absl::make_unique<CancellationManager>();
       TF_RETURN_IF_ERROR(RegisterCancellationCallback(

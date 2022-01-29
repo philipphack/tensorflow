@@ -5,7 +5,10 @@ load("//tensorflow/compiler/mlir:glob_lit_test.bzl", "glob_lit_tests")
 
 package(
     default_compatible_with = get_compatible_with_cloud(),
-    default_visibility = [":__subpackages__"],
+    default_visibility = [
+        ":__subpackages__",
+        "//tensorflow/compiler/mlir/tensorflow:__subpackages__",
+    ],
     licenses = ["notice"],  # Apache 2.0
 )
 
@@ -29,11 +32,33 @@ gentbl_cc_library(
 )
 
 cc_library(
+    name = "PassDetail",
+    hdrs = ["pass_detail.h"],
+    deps = [
+        ":PassIncGen",
+        "//tensorflow/core/ir:Dialect",
+        "@llvm-project//mlir:Pass",
+    ],
+)
+
+cc_library(
+    name = "DropUnregisteredAttributeOutputShapesPass",
+    srcs = ["drop_unregistered_attribute/output_shapes.cc"],
+    hdrs = ["drop_unregistered_attribute/output_shapes.h"],
+    deps = [
+        ":PassDetail",
+        "//tensorflow/core/ir:Dialect",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:Pass",
+    ],
+)
+
+cc_library(
     name = "TopoSortPass",
     srcs = ["toposort/toposort_pass.cc"],
     hdrs = ["toposort/toposort_pass.h"],
     deps = [
-        ":PassIncGen",
+        ":PassDetail",
         "//tensorflow/core/ir:Dialect",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
@@ -63,9 +88,8 @@ cc_library(
     hdrs = ["graph_to_func/graph_to_func_pass.h"],
     deps = [
         ":GraphToFunc",
-        ":PassIncGen",
+        ":PassDetail",
         "//tensorflow/core/ir:Dialect",
-        "@com_google_absl//absl/container:flat_hash_set",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:Support",
@@ -76,6 +100,7 @@ cc_library(
     name = "PassRegistration",
     hdrs = ["pass_registration.h"],
     deps = [
+        ":DropUnregisteredAttributeOutputShapesPass",
         ":GraphToFuncPass",
         ":PassIncGen",
         ":TopoSortPass",

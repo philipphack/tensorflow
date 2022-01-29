@@ -274,9 +274,9 @@ bool IsOpAllowedTf2XlaFallback(Operation* op) {
   };
   // clang-format on
 
-  auto* abstractOp = op->getAbstractOperation();
+  auto abstractOp = op->getRegisteredInfo();
   if (!abstractOp) return false;
-  return ops->count(abstractOp->typeID);
+  return ops->count(abstractOp->getTypeID());
 }
 // LINT.ThenChange(:Tf2XlaPreferred)
 
@@ -352,7 +352,6 @@ bool IsOpAllowedTf2XlaPreferred(Operation* op) {
     TypeID::get<TF::ProdOp>(),
     TypeID::get<TF::QrOp>(),
     TypeID::get<TF::RandomStandardNormalOp>(),
-    TypeID::get<TF::RandomUniformOp>(),
     TypeID::get<TF::RangeOp>(),
     TypeID::get<TF::ReshapeOp>(),
     TypeID::get<TF::ReverseV2Op>(),
@@ -372,7 +371,6 @@ bool IsOpAllowedTf2XlaPreferred(Operation* op) {
     TypeID::get<TF::SqueezeOp>(),
     TypeID::get<TF::StatefulPartitionedCallOp>(),
     TypeID::get<TF::StopGradientOp>(),
-    TypeID::get<TF::StridedSliceOp>(),
     TypeID::get<TF::StridedSliceGradOp>(),
     TypeID::get<TF::SumOp>(),
     TypeID::get<TF::TensorScatterUpdateOp>(),
@@ -390,9 +388,9 @@ bool IsOpAllowedTf2XlaPreferred(Operation* op) {
     TypeID::get<TF::ZerosLikeOp>(),
   };
   // clang-format on
-  auto* abstractOp = op->getAbstractOperation();
+  auto abstractOp = op->getRegisteredInfo();
   if (!abstractOp) return false;
-  return ops->count(abstractOp->typeID);
+  return ops->count(abstractOp->getTypeID());
 }
 // LINT.ThenChange()
 
@@ -404,9 +402,9 @@ bool IsOpAllowedForTesting(Operation* op) {
     TypeID::get<TF::ConstOp>(),
   };
   // clang-format on
-  auto* abstractOp = op->getAbstractOperation();
+  auto abstractOp = op->getRegisteredInfo();
   if (!abstractOp) return false;
-  return ops->count(abstractOp->typeID);
+  return ops->count(abstractOp->getTypeID());
 }
 
 namespace {
@@ -538,7 +536,7 @@ LogicalResult Tf2XlaRewriter::LegalizeOp() {
   }
 
   for (const auto& attr : op_->getAttrs()) {
-    if (attr.second.isa<SymbolRefAttr>()) {
+    if (attr.getValue().isa<SymbolRefAttr>()) {
       return op_->emitRemark()
              << "ops with symbol references are not supported";
     }
@@ -739,7 +737,7 @@ class LegalizeTF : public LegalizeTFPassBase<LegalizeTF> {
   LegalizeTF(const LegalizeTF&) {}
 
   void runOnFunction() override {
-    OwningRewritePatternList patterns(&getContext());
+    RewritePatternSet patterns(&getContext());
     patterns.insert<Tf2XlaRewritePattern>(
         &getContext(), device_type_, prefer_tf2xla_, legalize_test_only_ops_);
     if (failed(
@@ -753,7 +751,7 @@ class LegalizeTF : public LegalizeTFPassBase<LegalizeTF> {
 }  // end namespace
 
 void PopulateLegalizeTfWithTf2XlaPatterns(llvm::StringRef device_type,
-                                          OwningRewritePatternList& patterns,
+                                          RewritePatternSet& patterns,
                                           MLIRContext* ctx,
                                           bool prefer_tf2xla) {
   patterns.insert<Tf2XlaRewritePattern>(ctx, device_type.str(), prefer_tf2xla,

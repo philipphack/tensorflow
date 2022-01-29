@@ -15,6 +15,7 @@
 
 import enum
 import inspect
+import types
 import typing
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Sequence, Tuple, Type, TypeVar, Union, overload
 
@@ -241,7 +242,11 @@ class OpSharding_Type(enum.IntEnum):
 class OpSharding:
   Type: typing.Type[OpSharding_Type]
   type: OpSharding_Type
-  replicate_on_last_dim: bool
+  replicate_on_last_tile_dim: bool
+  tile_assignment_dimensions: Sequence[int]
+  tile_assignment_devices: Sequence[int]
+  tuple_shardings: Sequence[OpSharding]
+  def SerializeToString(self) -> bytes: ...
 
 class ChannelHandle_ChannelType(enum.IntEnum):
   CHANNEL_TYPE_INVALID: int
@@ -442,6 +447,10 @@ class Traceback:
   frames: Sequence[Frame]
   def __str__(self) -> str: ...
   def as_python_traceback(self) -> Any: ...
+  def raw_frames(self) -> Sequence[Tuple[types.CodeType, int]]: ...
+
+  @staticmethod
+  def code_addr2line(code: types.CodeType, lasti: int) -> int: ...
 
 def replace_thread_exc_traceback(traceback: Any): ...
 
@@ -475,6 +484,8 @@ def collect_garbage() -> None: ...
 
 def is_optimized_build() -> bool: ...
 
+def json_to_pprof_profile(json: str) -> bytes: ...
+def pprof_profile_to_json(proto: bytes) -> str: ...
 
 class CompiledFunctionCache:
   def __init__(self, capacity: int = ...): ...

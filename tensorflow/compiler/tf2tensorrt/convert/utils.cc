@@ -27,7 +27,7 @@ namespace tensorrt {
 
 string DebugString(const nvinfer1::Dims& dims) {
   string out = StrCat("nvinfer1::Dims(nbDims=", dims.nbDims, ", d=");
-  for (int i = 0; i < dims.nbDims; ++i) {
+  for (int i = 0; i < std::max(dims.nbDims, 0); ++i) {
     StrAppend(&out, dims.d[i]);
     StrAppend(&out, ",");
   }
@@ -75,7 +75,11 @@ string DebugString(const nvinfer1::Permutation& permutation, int len) {
 }
 
 string DebugString(const ITensorProxyPtr& tensor) {
-  return DebugString(*tensor->trt_tensor());
+  return StrCat(
+      tensor->is_trt_tensor() ? "nvinfer1::ITensor(@" : "SimpleItensor(@",
+      reinterpret_cast<uintptr_t>(&tensor), ", name=", tensor->getName(),
+      ", dtype=", DebugString(tensor->getType()),
+      ", dims=", DebugString(tensor->getDimensions()), ")");
 }
 
 string DebugString(const nvinfer1::ITensor& tensor) {
@@ -136,18 +140,8 @@ Status GetNetworkInputShapes(const nvinfer1::INetworkDefinition* network,
   input_shapes->resize(n_inputs);
   for (int i = 0; i < n_inputs; i++) {
     const ITensorProxyPtr input = network->getInput(i);
-    const nvinfer1::Dims input_dim = input->getDimensions();
-    TF_RETURN_IF_ERROR(TrtDimsToTensorShape(input_dim, &input_shapes->at(i)));
-  }
-  return Status::OK();
-}
-Status TrtDimsToTensorShape(const std::vector<int>& trt_dims,
-                            TensorShape* shape,
-                            absl::optional<int> batch_size) {
-  TF_RETURN_IF_ERROR(
-      TensorShapeUtils::MakeShape(trt_dims.data(), trt_dims.size(), shape));
-  if (batch_size) {
-    shape->InsertDim(0, batch_size.value());
+    TF_RETURN_IF_ERROR(DimsAdapter(input->getDimensions())
+                           .PartialTensorShape(&input_shapes->at(i)));
   }
   return Status::OK();
 }
